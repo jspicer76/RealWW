@@ -510,6 +510,7 @@ def design_sbr_autotune_mlss(
 # BIOLOGY AUTO-TUNE PART 2: SRT (Sludge Retention Time) Auto-Tune
 # --------------------------------------------------------------------
 
+
 def design_sbr_autotune_srt(
     flow_mgd: float,
     target_srt_days: float = 12.0,
@@ -609,4 +610,214 @@ def design_sbr_autotune_srt(
             f"SRT auto-tune did NOT converge in {max_iter} iterations. "
             f"Final SRT={srt_days:.1f} days"
         )
+    }
+# --------------------------------------------------------------------
+# BIOLOGY AUTO-TUNE PART 3: Combined MLSS + SRT Optimization
+# --------------------------------------------------------------------
+
+def design_sbr_autotune_biology(
+    flow_mgd: float,
+    target_f_m: float = 0.12,       # Option B default
+    target_srt_days: float = 15.0,  # Option B default
+    mlss_initial: float = 3500.0,
+    mlss_tolerance: float = 200.0,
+    srt_tolerance: float = 0.5,
+    max_loops: int = 10,
+    **kwargs
+) -> Dict[str, Any]:
+    """
+    Full biological auto-tune:
+      - Auto-tunes MLSS to hit F:M
+      - Auto-tunes WAS flow to hit SRT
+      - Iterates until both converge
+      - Returns final design and history
+
+    Returns:
+      {
+        "final_design": ...,
+        "mlss_final": ...,
+        "srt_final": ...,
+        "was_flow_mgd": ...,
+        "iterations": [...],
+        "converged": True/False,
+        "notes": ...
+      }
+    """
+
+    mlss = mlss_initial
+    was_flow_mgd = 0.0002
+    loop_history = []
+
+    last_mlss = None
+    last_srt = None
+
+    for loop in range(1, max_loops + 1):
+
+        # --------------------------------------------------------
+        # 1. MLSS auto-tune (F:M)
+        # --------------------------------------------------------
+        mlss_results = design_sbr_autotune_mlss(
+            flow_mgd=flow_mgd,
+            target_f_m=target_f_m,
+            mlss_initial=mlss,
+            **kwargs
+        )
+
+        mlss = mlss_results["mlss_final"]
+        design_after_mlss = mlss_results["final_design"]
+
+        # --------------------------------------------------------
+        # 2. SRT auto-tune (WAS)
+        # --------------------------------------------------------
+        srt_results = design_sbr_autotune_srt(
+            flow_mgd=flow_mgd,
+            target_srt_days=target_srt_days,
+            mlss_mgL=mlss,
+            **kwargs
+        )
+
+        was_flow_mgd = srt_results["was_flow_mgd"]
+        srt_final = srt_results["srt_final"]
+        design_after_srt = srt_results["final_design"]
+
+        loop_history.append({
+            "loop": loop,
+            "mlss": mlss,
+            "srt": srt_final,
+            "was_flow_mgd": was_flow_mgd,
+        })
+
+        # --------------------------------------------------------
+        # 3. Check convergence
+        # --------------------------------------------------------
+        if last_mlss is not None and last_srt is not None:
+            mlss_change = abs(mlss - last_mlss)
+            srt_change = abs(srt_final - last_srt)
+
+            if mlss_change <= mlss_tolerance and srt_change <= srt_tolerance:
+                return {
+                    "final_design": design_after_srt,
+                    "mlss_final": mlss,
+                    "srt_final": srt_final,
+                    "was_flow_mgd": was_flow_mgd,
+                    "iterations": loop_history,
+                    "converged": True,
+                    "notes": (
+                        f"Biological auto-tune converged in {loop} loops. "
+                        f"MLSS change={mlss_change:.1f} mg/L, "
+                        f"SRT change={srt_change:.2f} days."
+                    )
+                }
+
+        last_mlss = mlss
+        last_srt = srt_final
+
+    # --------------------------------------------------------
+    # Not converged
+    # --------------------------------------------------------
+    return {
+        "final_design": design_after_srt,
+        "mlss_final": mlss,
+        "srt_final": srt_final,
+        "was_flow_mgd": was_flow_mgd,
+        "iterations": loop_history,
+        "converged": False,
+        "notes": (
+            f"Biological auto-tune DID NOT converge in {max_loops} loops. "
+            f"Final MLSS={mlss:.0f} mg/L, SRT={srt_final:.2f} days."
+        )
+    }
+# --------------------------------------------------------------------
+# MASTER OPTIMIZER — Full SBR Cycle + Biology Auto-Tune
+# --------------------------------------------------------------------
+
+def design_sbr_optimize_all(
+    flow_mgd: float,
+    target_f_m: float = 0.12,
+    target_srt_days: float = 15.0,
+    mlss_initial: float = 3000.0,
+    **kwargs
+) -> Dict[str, Any]:
+    """
+    Runs the complete SBR optimization process:
+
+      1. Full cycle auto-tune (decant, idle, fill, settle)
+      2. MLSS auto-tune (hit target F:M)
+      3. SRT auto-tune (hit target SRT)
+
+    Returns:
+      {
+        "final_design": {...},
+        "cycle_changes": [...],
+        "biology_iterations": [...],
+        "biology_final": {...},
+        "converged": True/False,
+        "notes": "..."
+      }
+    """
+
+    # ------------------------------
+    # PART 1 — CYCLE AUTO-TUNE
+    # ------------------------------
+    cycle_auto = design_sbr_autotune_full_cycle(flow_mgd=flow_mgd, **kwargs)
+
+    cycle_tuned_design = cycle_auto["autotuned_design"]
+    cycle_changes = cycle_auto["changes_made"]
+
+    # Extract tuned cycle parameters
+    tuned_cycle = cycle_tuned_design["cycle"]
+
+    # Feed them to the biology auto-tune
+    kwargs.update({
+        "fill_hr": tuned_cycle["fill_hr"],
+        "react_hr": tuned_cycle["react_hr"],
+        "settle_hr": tuned_cycle["settle_hr"],
+        "decant_hr": tuned_cycle["decant_hr"],
+        "idle_hr": tuned_cycle["idle_hr"],
+    })
+
+    # ------------------------------
+    # PART 2 — MLSS AUTO-TUNE
+    # ------------------------------
+    mlss_auto = design_sbr_autotune_mlss(
+        flow_mgd=flow_mgd,
+        target_f_m=target_f_m,
+        mlss_initial=mlss_initial,
+        **kwargs
+    )
+
+    tuned_design_after_mlss = mlss_auto["final_design"]
+    mlss_final = mlss_auto["mlss_final"]
+
+    # Update inputs for SRT auto-tune
+    kwargs["mlss_mgL"] = mlss_final
+
+    # ------------------------------
+    # PART 3 — SRT AUTO-TUNE
+    # ------------------------------
+    kwargs.pop("mlss_mgL", None)
+    
+    srt_auto = design_sbr_autotune_srt(
+        flow_mgd=flow_mgd,
+        target_srt_days=target_srt_days,
+        mlss_mgL=mlss_final,
+        **kwargs
+    )
+
+    final_design = srt_auto["final_design"]
+
+    # ------------------------------
+    # FINAL OUTPUT
+    # ------------------------------
+    return {
+        "final_design": final_design,
+        "cycle_changes": cycle_changes,
+        "biology_iterations": mlss_auto["iterations"] + srt_auto["iterations"],
+        "biology_final": {
+            "mlss_final": mlss_final,
+            "srt_final": srt_auto["srt_final"],
+            "was_flow_mgd": srt_auto["was_flow_mgd"],
+        },
+        "converged": True,
+        "notes": "Full SBR optimization completed: cycle + MLSS + SRT.",
     }

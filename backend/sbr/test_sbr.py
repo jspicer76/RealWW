@@ -9,6 +9,11 @@ from pprint import pprint
 
 from backend.sbr.design import design_sbr
 
+from backend.sbr.design import (
+    design_sbr_autotune_srt,
+    design_sbr_autotune_biology,
+)
+
 
 def print_header(title: str) -> None:
     print("\n" + "=" * 60)
@@ -113,3 +118,19 @@ print("Final SRT (days):", srt_results["srt_final"])
 print("Final WAS flow (MGD):", srt_results["was_flow_mgd"])
 print("Last iteration:")
 pprint(srt_results["iterations"][-1], sort_dicts=False)
+
+print("\n============================================================")
+print("10. FULL BIOLOGY AUTO-TUNE (MLSS + SRT)")
+print("============================================================")
+
+bio_full = design_sbr_autotune_biology(flow_mgd=0.43)
+from pprint import pprint
+pprint(bio_full, sort_dicts=False)
+
+from backend.sbr.design import design_sbr_optimize_all
+
+print_header("11. FULL SBR OPTIMIZATION (CYCLE + MLSS + SRT)")
+opt = design_sbr_optimize_all(flow_mgd=0.43)
+
+from pprint import pprint
+pprint(opt, sort_dicts=False)
