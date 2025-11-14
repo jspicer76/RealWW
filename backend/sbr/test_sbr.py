@@ -1,7 +1,7 @@
 # backend/sbr/test_sbr.py
 
 from __future__ import annotations
-from backend.sbr.design import design_sbr_autotune
+
 from backend.sbr.design import design_sbr_autotune_full_cycle
 
 
@@ -75,3 +75,30 @@ for c in results["changes_made"]:
 print("\nFINAL TEN STATES CHECK:")
 from pprint import pprint
 pprint(results["autotuned_design"]["ten_states"])
+
+from backend.sbr.design import design_sbr_autotune_mlss
+
+
+bio_results = design_sbr_autotune_mlss(
+    flow_mgd=0.43,
+    target_f_m=0.15,
+)
+
+print_header("8. BIOLOGY AUTO-TUNE (F:M TARGET)")
+print(bio_results["notes"])
+print("Last iteration:")
+from pprint import pprint
+pprint(bio_results["iterations"][-1], sort_dicts=False)
+print("\nFinal biology block:")
+pprint(bio_results["final_design"]["biology"], sort_dicts=False)
+
+
+from backend.sbr.design import design_sbr_autotune_mlss
+
+
+bio_mlss = design_sbr_autotune_mlss(flow_mgd=0.43, target_f_m=0.15)
+
+print("\nMLSS AUTO-TUNE RESULT:")
+print(bio_mlss["notes"])
+print("Final MLSS:", bio_mlss["mlss_final"])
+print("Final F:M:", bio_mlss["f_m_final"])

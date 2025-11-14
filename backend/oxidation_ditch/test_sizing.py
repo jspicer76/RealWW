@@ -1,4 +1,5 @@
 from backend.oxidation_ditch.sizing import design_oxidation_ditch
+from backend.sbr.design import design_sbr_bio_autotune
 
 # Example: Hodgenville design flow = 0.43 MGD
 results = design_oxidation_ditch(flow_mgd=0.43)

@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+
+
+
 from typing import Any, Dict, Optional
 
 # --------------------------------------------------------------------
@@ -78,7 +81,11 @@ def design_sbr(
     basin_depth_ft: float = 18.0,         # typical SBR sidewater depth
     decant_fraction_of_depth: float = 0.30,
     solids_storage_fraction: float = 0.15,
+    # Biological design parameters
+    mlss_mgL: float = DEFAULT_MLSS,
+    target_srt_days: float = DEFAULT_TARGET_SRT,
 ) -> Dict[str, Any]:
+
     """
     RealWW SBR design engine.
 
@@ -103,6 +110,7 @@ def design_sbr(
                 "tss_mgL": tss_mgL,
                 "nh3_mgL": nh3_mgL,
                 "n_basins": n_basins,
+                
             },
             "loads": {
                 "bod_lb_day": 0.0,
@@ -299,12 +307,12 @@ def design_sbr(
         },
     }
 
-    # ----------------------------------------------------------------
+        # ----------------------------------------------------------------
     # 2F. Biological Process Calculations (MLSS, SRT, F:M)
     # ----------------------------------------------------------------
 
-    # MLSS and MLVSS
-    mlss = DEFAULT_MLSS  # user input could be added in future
+    # MLSS and MLVSS (now using input mlss_mgL)
+    mlss = mlss_mgL
     mlvss = mlss * DEFAULT_VSS_FRACTION
 
     # Total active basin volume (reactor volume) = total working volume
@@ -315,31 +323,33 @@ def design_sbr(
     # BOD load (lb/day) / (MLVSS mass in reactor, lb)
     # MLVSS mass = volume * mg/L * 8.34
     mlvss_mass_lb = reactor_volume_MG * mlvss * LB_PER_MG_PER_MG_L
-    f_m_ratio = bod_lb_day / mlvss_mass_lb
+    f_m_ratio = bod_lb_day / mlvss_mass_lb if mlvss_mass_lb > 0 else 0.0
 
     # SRT calculation
     # WAS solids concentration (mg/L)
     Xw = mlss * DEFAULT_WAS_SOLIDS
     Xe = DEFAULT_EFF_TSS
 
-    # SRT target → compute required WAS flow
-    # SRT = (V * MLSS) / (Qw*Xw + Qe*Xe)
-    # Solve for Qw:
-    # Qw = (V*MLSS / SRT - Qe*Xe) / Xw
-    V_MG = reactor_volume_MG
-    V_MG_per_L = V_MG * 1_000_000  # convert MG → gallons → liters? NO.
-    # Actually: SRT formula uses:
-    # lb solids = MLSS (mg/L) * 8.34 lbs/MG/L * MG volume
+    # Total solids mass in system (lb)
+    total_solids_lb = reactor_volume_MG * mlss * LB_PER_MG_PER_MG_L
 
-    total_solids_lb = V_MG * mlss * LB_PER_MG_PER_MG_L
     eff_flow_mgd = Q_mgd  # effluent flow ~ influent flow
 
-    required_was_flow_mgd = (
-        (total_solids_lb / DEFAULT_TARGET_SRT) - (eff_flow_mgd * Xe * LB_PER_MG_PER_MG_L)
-    ) / (Xw * LB_PER_MG_PER_MG_L)
+    # Target SRT: compute required WAS flow
+    # SRT = (mass in system) / (mass leaving per day)
+    # mass leaving per day = Qw*Xw*8.34 + Qe*Xe*8.34
+    # Solve for Qw:
+    # Qw = (M/SRT - Qe*Xe*8.34) / (Xw*8.34)
+    if target_srt_days > 0 and Xw > 0:
+        required_was_flow_mgd = (
+            (total_solids_lb / target_srt_days)
+            - (eff_flow_mgd * Xe * LB_PER_MG_PER_MG_L)
+        ) / (Xw * LB_PER_MG_PER_MG_L)
+    else:
+        required_was_flow_mgd = 0.0
 
     if required_was_flow_mgd < 0:
-        required_was_flow_mgd = 0
+        required_was_flow_mgd = 0.0
 
     biology_info = {
         "mlss_mgL": mlss,
@@ -347,7 +357,7 @@ def design_sbr(
         "reactor_volume_MG": reactor_volume_MG,
         "reactor_volume_ft3": reactor_volume_ft3,
         "f_m_ratio": f_m_ratio,
-        "srt_days": DEFAULT_TARGET_SRT,
+        "srt_days": target_srt_days,
         "was_flow_mgd": required_was_flow_mgd,
         "was_flow_gpd": required_was_flow_mgd * 1_000_000,
     }
@@ -468,6 +478,7 @@ def design_sbr(
         "decanter": decanter_info,
         "oxygen": oxygen_info,
         "ten_states": ten_states_info,
+        "biology": biology_info,
     }
 
     return results
@@ -616,3 +627,77 @@ def design_sbr_autotune_full_cycle(**kwargs) -> Dict[str, Any]:
         "changes_made": changes,
         "notes": notes,
     }
+# --------------------------------------------------------------------
+# BIOLOGY AUTO-TUNE PART 1: MLSS → Target F:M
+# --------------------------------------------------------------------
+
+def design_sbr_autotune_mlss(
+    flow_mgd: float,
+    target_f_m: float = 0.15,
+    mlss_initial: float = 3000.0,
+    mlss_min: float = 1500.0,
+    mlss_max: float = 6000.0,
+    tolerance: float = 0.01,
+    max_iter: int = 30,
+    **kwargs
+) -> Dict[str, Any]:
+    """
+    Auto-tunes MLSS concentration until F:M is within ± tolerance of target.
+
+    Returns:
+      {
+        "final_design": design_sbr output,
+        "mlss_final": ...,
+        "f_m_final": ...,
+        "history": [...],
+        "notes": ...
+      }
+    """
+
+    mlss = mlss_initial
+    history = []
+
+    for i in range(max_iter):
+        design = design_sbr(flow_mgd=flow_mgd, mlss_mgL=mlss, **kwargs)
+        bio = design["biology"]
+        f_m = bio["f_m_ratio"]
+
+        history.append({
+            "iteration": i + 1,
+            "mlss": mlss,
+            "f_m": f_m
+        })
+
+        # stop condition
+        if abs(f_m - target_f_m) <= tolerance:
+            return {
+                "final_design": design,
+                "mlss_final": mlss,
+                "f_m_final": f_m,
+                "history": history,
+                "notes": f"MLSS converged to {mlss:.0f} mg/L achieving F:M={f_m:.3f}"
+            }
+
+        # adjust MLSS:
+        # if F:M too high → need more biomass → increase MLSS
+        # if F:M too low → too much biomass → decrease MLSS
+        if f_m > 0:
+            mlss *= (target_f_m / f_m) ** 0.5  # stabilization exponent
+        else:
+            mlss -= 200
+
+        # enforce bounds
+        mlss = max(min(mlss, mlss_max), mlss_min)
+
+    # did not converge
+    return {
+    "final_design": design,
+    "mlss_final": mlss,
+    "f_m_final": f_m,
+    "iterations": history,   # <<— ADD THIS LINE
+    "notes": (
+        f"MLSS auto-tune did not converge within {max_iter} iterations. "
+        f"Final MLSS={mlss:.0f} mg/L, F:M={f_m:.3f}"
+    )
+}
+
