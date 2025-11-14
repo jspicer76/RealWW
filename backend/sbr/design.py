@@ -70,96 +70,27 @@ def design_sbr(
     nh3_mgL: float = DEFAULT_NH3_MG_L,
     n_basins: int = 2,
     cycles_per_day: Optional[float] = None,
-    # Ten States default cycle:
     fill_hr: float = 1.0,
     react_hr: float = 4.0,
     settle_hr: float = 1.5,
     decant_hr: float = 0.75,
     idle_hr: float = 0.5,
-    # Volume / geometry assumptions
-    design_detention_hr: float = 24.0,    # ≥ 24 hr required by spec
-    basin_depth_ft: float = 18.0,         # typical SBR sidewater depth
+    design_detention_hr: float = 24.0,
+    basin_depth_ft: float = 18.0,
     decant_fraction_of_depth: float = 0.30,
     solids_storage_fraction: float = 0.15,
-    # Biological design parameters
     mlss_mgL: float = DEFAULT_MLSS,
     target_srt_days: float = DEFAULT_TARGET_SRT,
+    was_mgd: float = 0.0002,
 ) -> Dict[str, Any]:
 
-    """
-    RealWW SBR design engine.
-
-    Returns a full design dictionary with:
-      - inputs
-      - loads
-      - cycle
-      - basin
-      - decanter
-      - oxygen
-      - ten_states (compliance checks + advisories)
-
-    This function NEVER returns None.
-    """
-
-    # Guard against pathological input, but still return a valid dict
-    if flow_mgd <= 0.0:
-        return {
-            "inputs": {
-                "flow_mgd": flow_mgd,
-                "bod_mgL": bod_mgL,
-                "tss_mgL": tss_mgL,
-                "nh3_mgL": nh3_mgL,
-                "n_basins": n_basins,
-                
-            },
-            "loads": {
-                "bod_lb_day": 0.0,
-                "tss_lb_day": 0.0,
-                "nh3_lb_day": 0.0,
-            },
-            "cycle": {
-                "fill_hr": fill_hr,
-                "react_hr": react_hr,
-                "settle_hr": settle_hr,
-                "decant_hr": decant_hr,
-                "idle_hr": idle_hr,
-                "total_cycle_time_hr": fill_hr + react_hr + settle_hr + decant_hr + idle_hr,
-                "cycles_per_day": 0.0,
-                "notes": "Flow ≤ 0. Design not meaningful; all capacities set to zero.",
-            },
-            "basin": {},
-            "decanter": {},
-            "oxygen": {},
-            "ten_states": {
-                "overall_pass": False,
-                "checks": {
-                    "min_two_basins": False,
-                    "independent_operation_assumed": False,
-                    "cycle_time_adequate": False,
-                    "min_24hr_detention": False,
-                    "max_decant_rate_4x_avg": False,
-                    "max_drawdown_2ft_hr": False,
-                    "min_react_three_hr": react_hr >= 3.0,
-                },
-                "required_decant_hr_for_2ft_hr_limit": None,
-                "required_decant_hr_for_4x_avg_limit": None,
-                "recommended_decant_hr": None,
-                "advisories": [
-                    "Flow is non-positive; Ten States compliance cannot be demonstrated."
-                ],
-                "notes": "Flow is non-positive; Ten States compliance cannot be demonstrated.",
-            },
-        }
-
-    # ----------------------------------------------------------------
-    # 2A. Influent Loads
-    # ----------------------------------------------------------------
+    # -------------------------------------------
+    # Influent Loads
+    # -------------------------------------------
     Q_mgd = flow_mgd
-    Q_MG_per_day = Q_mgd  # since units are MG/day already
-
-    bod_lb_day = Q_MG_per_day * bod_mgL * LB_PER_MG_PER_MG_L
-    tss_lb_day = Q_MG_per_day * tss_mgL * LB_PER_MG_PER_MG_L
-    nh3_lb_day = Q_MG_per_day * nh3_mgL * LB_PER_MG_PER_MG_L
+    bod_lb_day = Q_mgd * bod_mgL * LB_PER_MG_PER_MG_L
+    tss_lb_day = Q_mgd * tss_mgL * LB_PER_MG_PER_MG_L
+    nh3_lb_day = Q_mgd * nh3_mgL * LB_PER_MG_PER_MG_L
 
     loads = {
         "bod_lb_day": bod_lb_day,
@@ -167,28 +98,11 @@ def design_sbr(
         "nh3_lb_day": nh3_lb_day,
     }
 
-    # ----------------------------------------------------------------
-    # 2B. SBR Cycle Design
-    # ----------------------------------------------------------------
+    # -------------------------------------------
+    # Cycle
+    # -------------------------------------------
     total_cycle_time_hr = fill_hr + react_hr + settle_hr + decant_hr + idle_hr
-
-    if total_cycle_time_hr <= 0.0:
-        # Defensive; but still keep a meaningful cycle
-        total_cycle_time_hr = 8.0
-
-    if cycles_per_day is None or cycles_per_day <= 0.0:
-        cycles_per_day = HOURS_PER_DAY / total_cycle_time_hr
-
-    cycle_time_from_cycles_hr = HOURS_PER_DAY / cycles_per_day
-
-    if abs(cycle_time_from_cycles_hr - total_cycle_time_hr) > 1e-3:
-        cycle_note = (
-            "Cycle components and cycles_per_day are not exactly consistent; "
-            "cycles_per_day derived from component times."
-        )
-        cycles_per_day = HOURS_PER_DAY / total_cycle_time_hr
-    else:
-        cycle_note = "Cycle components and cycles_per_day are consistent."
+    cycles_per_day = HOURS_PER_DAY / total_cycle_time_hr
 
     cycle_info = {
         "fill_hr": fill_hr,
@@ -198,47 +112,31 @@ def design_sbr(
         "idle_hr": idle_hr,
         "total_cycle_time_hr": total_cycle_time_hr,
         "cycles_per_day": cycles_per_day,
-        "cycle_time_from_cycles_hr": cycle_time_from_cycles_hr,
-        "notes": cycle_note,
     }
 
-    # ----------------------------------------------------------------
-    # 2C. Basin Volume Requirements
-    # ----------------------------------------------------------------
-    # Required total working volume for ≥ 24 hr detention at average flow
-    design_detention_days = design_detention_hr / HOURS_PER_DAY
-    required_total_working_volume_MG = Q_mgd * design_detention_days
+    # -------------------------------------------
+    # Basin Volume
+    # -------------------------------------------
+    detention_days = design_detention_hr / HOURS_PER_DAY
+    required_total_working_volume_MG = Q_mgd * detention_days
+    total_volume_with_solids_MG = required_total_working_volume_MG * (1 + solids_storage_fraction)
 
-    # Include additional storage for mixed liquor / solids in react + settle
-    total_volume_including_solids_MG = required_total_working_volume_MG * (
-        1.0 + solids_storage_fraction
-    )
-
-    # Enforce minimum 2 basins by design
     n_basins = max(2, int(n_basins))
-
-    volume_per_basin_MG = total_volume_including_solids_MG / n_basins
+    volume_per_basin_MG = total_volume_with_solids_MG / n_basins
     volume_per_basin_ft3 = volume_per_basin_MG * FT3_PER_MG
 
-    # Sidewater depth, surface area, and decant drawdown
-    depth_ft_max = basin_depth_ft
-    if depth_ft_max <= 0.0:
-        depth_ft_max = 18.0
-
+    depth_ft_max = max(basin_depth_ft, 18.0)
     surface_area_ft2 = volume_per_basin_ft3 / depth_ft_max
-
-    # Assume a certain fraction of the depth is drawn down during decant
     decant_drawdown_depth_ft = depth_ft_max * decant_fraction_of_depth
     depth_ft_min = depth_ft_max - decant_drawdown_depth_ft
 
-    # Actual detention time provided at this volume
     actual_total_working_volume_MG = volume_per_basin_MG * n_basins
-    actual_detention_hr = (actual_total_working_volume_MG / Q_mgd) * HOURS_PER_DAY
+    actual_detention_hr = actual_total_working_volume_MG / Q_mgd * HOURS_PER_DAY
 
     basin_info = {
         "n_basins": n_basins,
         "required_total_working_volume_MG": required_total_working_volume_MG,
-        "total_volume_including_solids_MG": total_volume_including_solids_MG,
+        "total_volume_including_solids_MG": total_volume_with_solids_MG,
         "volume_per_basin_MG": volume_per_basin_MG,
         "volume_per_basin_ft3": volume_per_basin_ft3,
         "basin_depth_ft_max": depth_ft_max,
@@ -249,19 +147,33 @@ def design_sbr(
         "actual_detention_hr": actual_detention_hr,
     }
 
-    # ----------------------------------------------------------------
-    # 2D. Air / Oxygen Requirements
-    # ----------------------------------------------------------------
-    # BOD + nitrification demand
+    # -------------------------------------------
+    # Decanter Sizing
+    # -------------------------------------------
+    decant_events_per_day = n_basins * cycles_per_day
+    volume_per_decant_MG = Q_mgd / decant_events_per_day
+    decant_time_days = decant_hr / HOURS_PER_DAY
+    decant_rate_MGD = volume_per_decant_MG / decant_time_days
+    decant_rate_gpm = decant_rate_MGD * (MGD_TO_GPD / 1440)
+
+    drawdown_velocity_ft_hr = decant_drawdown_depth_ft / decant_hr
+
+    decanter_info = {
+        "decant_events_per_day": decant_events_per_day,
+        "volume_per_decant_MG": volume_per_decant_MG,
+        "decant_rate_MGD": decant_rate_MGD,
+        "decant_rate_gpm": decant_rate_gpm,
+        "drawdown_velocity_ft_hr": drawdown_velocity_ft_hr,
+    }
+
+    # -------------------------------------------
+    # Oxygen
+    # -------------------------------------------
     o2_bod_lb_day = bod_lb_day * O2_REQUIRED_PER_LB_BOD
     o2_nh3_lb_day = nh3_lb_day * O2_REQUIRED_PER_LB_NH3
     o2_total_lb_day = o2_bod_lb_day + o2_nh3_lb_day
 
-    # Aeration only runs during react-period
     total_react_hr_per_day = react_hr * cycles_per_day
-    if total_react_hr_per_day <= 0.0:
-        total_react_hr_per_day = 1.0  # defensive
-
     o2_lb_per_hr_during_react = o2_total_lb_day / total_react_hr_per_day
 
     oxygen_info = {
@@ -272,84 +184,33 @@ def design_sbr(
         "o2_lb_per_hr_during_react": o2_lb_per_hr_during_react,
     }
 
-    # ----------------------------------------------------------------
-    # 2E. Decanter Sizing
-    # ----------------------------------------------------------------
-    # Volume decanted per event is based on average daily flow
-    decant_events_per_day = n_basins * cycles_per_day
-    if decant_events_per_day <= 0.0:
-        decant_events_per_day = 1.0
-
-    volume_per_decant_MG = Q_mgd / decant_events_per_day  # MG/event
-
-    # Decant rate as MGD and gpm
-    decant_time_days = decant_hr / HOURS_PER_DAY
-    if decant_time_days <= 0.0:
-        decant_time_days = 1.0 / HOURS_PER_DAY  # 1 hr; defensive
-
-    decant_rate_MGD = volume_per_decant_MG / decant_time_days
-    decant_rate_gpm = decant_rate_MGD * (MGD_TO_GPD / 1440.0)
-
-    # Drawdown velocity (ft/hr)
-    drawdown_velocity_ft_hr = (
-        decant_drawdown_depth_ft / decant_hr if decant_hr > 0.0 else 0.0
-    )
-
-    decanter_info = {
-        "decant_events_per_day": decant_events_per_day,
-        "volume_per_decant_MG": volume_per_decant_MG,
-        "decant_rate_MGD": decant_rate_MGD,
-        "decant_rate_gpm": decant_rate_gpm,
-        "drawdown_velocity_ft_hr": drawdown_velocity_ft_hr,
-        "limits": {
-            "max_drawdown_ft_hr": 2.0,
-            "max_decant_rate_multiplier_of_avg": 4.0,
-        },
-    }
-
-        # ----------------------------------------------------------------
-    # 2F. Biological Process Calculations (MLSS, SRT, F:M)
-    # ----------------------------------------------------------------
-
-    # MLSS and MLVSS (now using input mlss_mgL)
+    # -------------------------------------------
+    # BIOLOGY (MLSS, SRT, F:M)
+    # -------------------------------------------
     mlss = mlss_mgL
     mlvss = mlss * DEFAULT_VSS_FRACTION
 
-    # Total active basin volume (reactor volume) = total working volume
     reactor_volume_MG = actual_total_working_volume_MG
     reactor_volume_ft3 = reactor_volume_MG * FT3_PER_MG
 
-    # F/M ratio
-    # BOD load (lb/day) / (MLVSS mass in reactor, lb)
-    # MLVSS mass = volume * mg/L * 8.34
     mlvss_mass_lb = reactor_volume_MG * mlvss * LB_PER_MG_PER_MG_L
-    f_m_ratio = bod_lb_day / mlvss_mass_lb if mlvss_mass_lb > 0 else 0.0
+    f_m_ratio = bod_lb_day / mlvss_mass_lb if mlvss_mass_lb > 0 else 0
 
-    # SRT calculation
-    # WAS solids concentration (mg/L)
     Xw = mlss * DEFAULT_WAS_SOLIDS
     Xe = DEFAULT_EFF_TSS
-
-    # Total solids mass in system (lb)
     total_solids_lb = reactor_volume_MG * mlss * LB_PER_MG_PER_MG_L
 
-    eff_flow_mgd = Q_mgd  # effluent flow ~ influent flow
+    eff_flow_mgd = Q_mgd
 
-    # Target SRT: compute required WAS flow
-    # SRT = (mass in system) / (mass leaving per day)
-    # mass leaving per day = Qw*Xw*8.34 + Qe*Xe*8.34
-    # Solve for Qw:
-    # Qw = (M/SRT - Qe*Xe*8.34) / (Xw*8.34)
-    if target_srt_days > 0 and Xw > 0:
+    if target_srt_days > 0:
         required_was_flow_mgd = (
             (total_solids_lb / target_srt_days)
-            - (eff_flow_mgd * Xe * LB_PER_MG_PER_MG_L)
+            - eff_flow_mgd * Xe * LB_PER_MG_PER_MG_L
         ) / (Xw * LB_PER_MG_PER_MG_L)
     else:
-        required_was_flow_mgd = 0.0
+        required_was_flow_mgd = 0
 
-    if required_was_flow_mgd < 0:
-        required_was_flow_mgd = 0.0
+    required_was_flow_mgd = max(required_was_flow_mgd, 0)
 
     biology_info = {
         "mlss_mgL": mlss,
@@ -362,99 +223,38 @@ def design_sbr(
         "was_flow_gpd": required_was_flow_mgd * 1_000_000,
     }
 
-
-    # ----------------------------------------------------------------
-    # 2F. Ten States Standards Checks + Advisory Calculations
-    # ----------------------------------------------------------------
-    checks: Dict[str, bool] = {}
-
-    # 1) ≥ 2 basins required
-    checks["min_two_basins"] = n_basins >= 2
-
-    # 2) Basins must be capable of independent operation
-    checks["independent_operation_assumed"] = n_basins >= 2
-
-    # 3) Cycle time adequacy — practical range
-    checks["cycle_time_adequate"] = (
-        4.0 <= total_cycle_time_hr <= 12.0
-        and 3.0 <= cycles_per_day <= 12.0
-    )
-
-    # 4) ≥ 24 hr total detention time at average flow
-    checks["min_24hr_detention"] = actual_detention_hr >= 24.0
-
-    # 5) Decant rate ≤ 4× average flow
-    max_decant_rate_allowed_MGD = 4.0 * Q_mgd
-    checks["max_decant_rate_4x_avg"] = decant_rate_MGD <= max_decant_rate_allowed_MGD
-
-    # 6) Drawdown velocity ≤ 2 ft/hr
-    max_drawdown_allowed_ft_hr = 2.0
-    checks["max_drawdown_2ft_hr"] = drawdown_velocity_ft_hr <= max_drawdown_allowed_ft_hr
-
-    # 7) Minimum aeration period ≥ 3 hr react
-    checks["min_react_three_hr"] = react_hr >= 3.0
-
-    # ---- Advisory calculations ----
-
-    # For 2 ft/hr drawdown limit:
-    required_decant_hr_for_2ft_hr_limit = (
-        decant_drawdown_depth_ft / max_drawdown_allowed_ft_hr
-        if max_drawdown_allowed_ft_hr > 0
-        else decant_hr
-    )
-
-    # For 4× average flow limit:
-    # decant_rate_MGD = volume_per_decant_MG / (decant_hr / 24)
-    # Solve for decant_hr:
-    required_decant_hr_for_4x_avg_limit = (
-        (volume_per_decant_MG / max_decant_rate_allowed_MGD) * HOURS_PER_DAY
-        if max_decant_rate_allowed_MGD > 0
-        else decant_hr
-    )
-
-    # Controlling requirement
-    recommended_decant_hr = max(
-        required_decant_hr_for_2ft_hr_limit,
-        required_decant_hr_for_4x_avg_limit,
-    )
-
-    advisories = []
-
-    if not checks["max_drawdown_2ft_hr"]:
-        advisories.append(
-            f"Increase decant time to ≥ {required_decant_hr_for_2ft_hr_limit:.2f} hr "
-            "to satisfy drawdown velocity (≤ 2 ft/hr)."
-        )
-
-    if not checks["max_decant_rate_4x_avg"]:
-        advisories.append(
-            f"Increase decant time to ≥ {required_decant_hr_for_4x_avg_limit:.2f} hr "
-            "to satisfy decant rate (≤ 4× average flow)."
-        )
-
-    advisories.append(
-        f"Recommended decant time: {recommended_decant_hr:.2f} hr."
-    )
-
-    overall_pass = all(checks.values())
-
-    ten_states_info = {
-        "overall_pass": overall_pass,
-        "checks": checks,
-        "required_decant_hr_for_2ft_hr_limit": required_decant_hr_for_2ft_hr_limit,
-        "required_decant_hr_for_4x_avg_limit": required_decant_hr_for_4x_avg_limit,
-        "recommended_decant_hr": recommended_decant_hr,
-        "advisories": advisories,
-        "notes": (
-            "Ten States checks include advisory values indicating the minimum "
-            "design changes required to achieve compliance."
-        ),
+    # -------------------------------------------
+    # TEN STATES CHECKS
+    # -------------------------------------------
+    checks = {
+        "min_two_basins": n_basins >= 2,
+        "independent_operation_assumed": True,
+        "cycle_time_adequate": 4 <= total_cycle_time_hr <= 12,
+        "min_24hr_detention": actual_detention_hr >= 24,
+        "max_decant_rate_4x_avg": decant_rate_MGD <= 4 * Q_mgd,
+        "max_drawdown_2ft_hr": drawdown_velocity_ft_hr <= 2,
+        "min_react_three_hr": react_hr >= 3,
     }
 
-    # ----------------------------------------------------------------
-    # 2G. Assemble full dictionary and return (never None)
-    # ----------------------------------------------------------------
-    results: Dict[str, Any] = {
+    required_decant_hr_for_2ft = decant_drawdown_depth_ft / 2
+    required_decant_hr_for_4x = (volume_per_decant_MG / (4 * Q_mgd)) * 24
+    recommended_decant_hr = max(required_decant_hr_for_2ft, required_decant_hr_for_4x)
+
+    ten_states_info = {
+        "overall_pass": all(checks.values()),
+        "checks": checks,
+        "required_decant_hr_for_2ft_hr_limit": required_decant_hr_for_2ft,
+        "required_decant_hr_for_4x_avg_limit": required_decant_hr_for_4x,
+        "recommended_decant_hr": recommended_decant_hr,
+        "advisories": [
+            f"Recommended decant time: {recommended_decant_hr:.2f} hr."
+        ],
+    }
+
+    # -------------------------------------------
+    # Assemble Results
+    # -------------------------------------------
+    results = {
         "inputs": {
             "flow_mgd": flow_mgd,
             "bod_mgL": bod_mgL,
@@ -477,11 +277,12 @@ def design_sbr(
         "basin": basin_info,
         "decanter": decanter_info,
         "oxygen": oxygen_info,
-        "ten_states": ten_states_info,
         "biology": biology_info,
+        "ten_states": ten_states_info,
     }
 
     return results
+
 # --------------------------------------------------------------------
 # AUTO-TUNE FUNCTION
 # --------------------------------------------------------------------
@@ -674,17 +475,21 @@ def design_sbr_autotune_mlss(
                 "final_design": design,
                 "mlss_final": mlss,
                 "f_m_final": f_m,
-                "history": history,
+                "iterations": history,
                 "notes": f"MLSS converged to {mlss:.0f} mg/L achieving F:M={f_m:.3f}"
             }
 
-        # adjust MLSS:
-        # if F:M too high → need more biomass → increase MLSS
-        # if F:M too low → too much biomass → decrease MLSS
-        if f_m > 0:
-            mlss *= (target_f_m / f_m) ** 0.5  # stabilization exponent
+        # correct MLSS auto-tune logic:
+        # If F:M too low → too much biomass → reduce MLSS
+        # If F:M too high → too little biomass → increase MLSS
+
+        error = f_m - target_f_m
+
+        if error < 0:
+            mlss /= (1 + abs(error) * 3)   # proportional decrease
         else:
-            mlss -= 200
+            mlss *= (1 + abs(error) * 3)   # proportional increase
+
 
         # enforce bounds
         mlss = max(min(mlss, mlss_max), mlss_min)
@@ -701,3 +506,318 @@ def design_sbr_autotune_mlss(
     )
 }
 
+# --------------------------------------------------------------------
+# BIOLOGY AUTO-TUNE PART 2: SRT (Sludge Retention Time) Auto-Tune
+# --------------------------------------------------------------------
+
+
+def design_sbr_autotune_srt(
+    flow_mgd: float,
+    target_srt_days: float = 12.0,
+    mlss_mgL: float = DEFAULT_MLSS,
+    tolerance_days: float = 0.5,
+    max_iter: int = 25,
+    **kwargs
+) -> Dict[str, Any]:
+    """
+    Adjusts WAS flow (Qw) until the SRT matches the target SRT value.
+
+    Returns:
+      {
+         "final_design": ...,
+         "was_flow_mgd": ...,
+         "srt_final": ...,
+         "iterations": [...],
+         "notes": ...
+      }
+    """
+
+    # Start with very small WAS flow
+    was_flow_mgd = 0.0002
+    history = []
+
+    for i in range(max_iter):
+
+        # Run SBR design using latest WAS estimate
+        design = design_sbr(
+            flow_mgd=flow_mgd,
+            was_mgd=was_flow_mgd,
+            mlss_mgL=mlss_mgL,
+            **kwargs
+        )
+
+        bio = design["biology"]
+
+        V_MG = bio["reactor_volume_MG"]
+        MLSS = bio["mlss_mgL"]
+
+        # Effluent solids assumed very small
+        Xe = DEFAULT_EFF_TSS
+        # WAS solids concentration (fraction of MLSS)
+        Xw = MLSS * DEFAULT_WAS_SOLIDS
+        Qe = flow_mgd
+
+        # Total mass of solids in reactor (lb)
+        solids_mass_lb = V_MG * MLSS * LB_PER_MG_PER_MG_L
+
+        # Compute current SRT
+        denom = (
+            was_flow_mgd * Xw * LB_PER_MG_PER_MG_L +
+            Qe * Xe * LB_PER_MG_PER_MG_L
+        )
+
+        if denom <= 0:
+            srt_days = float("inf")
+        else:
+            srt_days = solids_mass_lb / denom
+
+        history.append({
+            "iteration": i + 1,
+            "was_flow_mgd": was_flow_mgd,
+            "srt_days": srt_days
+        })
+
+        # Stop condition
+        if abs(srt_days - target_srt_days) <= tolerance_days:
+            return {
+                "final_design": design,
+                "was_flow_mgd": was_flow_mgd,
+                "srt_final": srt_days,
+                "iterations": history,
+                "notes": "SRT auto-tune converged."
+            }
+
+        # Solve for new WAS flow based on SRT mass balance
+        required_Qw = (
+            (solids_mass_lb / target_srt_days)
+            - (Qe * Xe * LB_PER_MG_PER_MG_L)
+        ) / (Xw * LB_PER_MG_PER_MG_L)
+
+        # Enforce bounds
+        required_Qw = max(required_Qw, 0.0002)           # minimum WAS
+        required_Qw = min(required_Qw, flow_mgd * 0.15)  # max 15% of influent
+
+        # Stability smoothing (prevents oscillation)
+        was_flow_mgd = 0.5 * was_flow_mgd + 0.5 * required_Qw
+
+    # Did not converge
+    return {
+        "final_design": design,
+        "was_flow_mgd": was_flow_mgd,
+        "srt_final": srt_days,
+        "iterations": history,
+        "notes": (
+            f"SRT auto-tune did NOT converge in {max_iter} iterations. "
+            f"Final SRT={srt_days:.1f} days"
+        )
+    }
+# --------------------------------------------------------------------
+# BIOLOGY AUTO-TUNE PART 3: Combined MLSS + SRT Optimization
+# --------------------------------------------------------------------
+
+def design_sbr_autotune_biology(
+    flow_mgd: float,
+    target_f_m: float = 0.12,       # Option B default
+    target_srt_days: float = 15.0,  # Option B default
+    mlss_initial: float = 3500.0,
+    mlss_tolerance: float = 200.0,
+    srt_tolerance: float = 0.5,
+    max_loops: int = 10,
+    **kwargs
+) -> Dict[str, Any]:
+    """
+    Full biological auto-tune:
+      - Auto-tunes MLSS to hit F:M
+      - Auto-tunes WAS flow to hit SRT
+      - Iterates until both converge
+      - Returns final design and history
+
+    Returns:
+      {
+        "final_design": ...,
+        "mlss_final": ...,
+        "srt_final": ...,
+        "was_flow_mgd": ...,
+        "iterations": [...],
+        "converged": True/False,
+        "notes": ...
+      }
+    """
+
+    mlss = mlss_initial
+    was_flow_mgd = 0.0002
+    loop_history = []
+
+    last_mlss = None
+    last_srt = None
+
+    for loop in range(1, max_loops + 1):
+
+        # --------------------------------------------------------
+        # 1. MLSS auto-tune (F:M)
+        # --------------------------------------------------------
+        mlss_results = design_sbr_autotune_mlss(
+            flow_mgd=flow_mgd,
+            target_f_m=target_f_m,
+            mlss_initial=mlss,
+            **kwargs
+        )
+
+        mlss = mlss_results["mlss_final"]
+        design_after_mlss = mlss_results["final_design"]
+
+        # --------------------------------------------------------
+        # 2. SRT auto-tune (WAS)
+        # --------------------------------------------------------
+        srt_results = design_sbr_autotune_srt(
+            flow_mgd=flow_mgd,
+            target_srt_days=target_srt_days,
+            mlss_mgL=mlss,
+            **kwargs
+        )
+
+        was_flow_mgd = srt_results["was_flow_mgd"]
+        srt_final = srt_results["srt_final"]
+        design_after_srt = srt_results["final_design"]
+
+        loop_history.append({
+            "loop": loop,
+            "mlss": mlss,
+            "srt": srt_final,
+            "was_flow_mgd": was_flow_mgd,
+        })
+
+        # --------------------------------------------------------
+        # 3. Check convergence
+        # --------------------------------------------------------
+        if last_mlss is not None and last_srt is not None:
+            mlss_change = abs(mlss - last_mlss)
+            srt_change = abs(srt_final - last_srt)
+
+            if mlss_change <= mlss_tolerance and srt_change <= srt_tolerance:
+                return {
+                    "final_design": design_after_srt,
+                    "mlss_final": mlss,
+                    "srt_final": srt_final,
+                    "was_flow_mgd": was_flow_mgd,
+                    "iterations": loop_history,
+                    "converged": True,
+                    "notes": (
+                        f"Biological auto-tune converged in {loop} loops. "
+                        f"MLSS change={mlss_change:.1f} mg/L, "
+                        f"SRT change={srt_change:.2f} days."
+                    )
+                }
+
+        last_mlss = mlss
+        last_srt = srt_final
+
+    # --------------------------------------------------------
+    # Not converged
+    # --------------------------------------------------------
+    return {
+        "final_design": design_after_srt,
+        "mlss_final": mlss,
+        "srt_final": srt_final,
+        "was_flow_mgd": was_flow_mgd,
+        "iterations": loop_history,
+        "converged": False,
+        "notes": (
+            f"Biological auto-tune DID NOT converge in {max_loops} loops. "
+            f"Final MLSS={mlss:.0f} mg/L, SRT={srt_final:.2f} days."
+        )
+    }
+# --------------------------------------------------------------------
+# MASTER OPTIMIZER — Full SBR Cycle + Biology Auto-Tune
+# --------------------------------------------------------------------
+
+def design_sbr_optimize_all(
+    flow_mgd: float,
+    target_f_m: float = 0.12,
+    target_srt_days: float = 15.0,
+    mlss_initial: float = 3000.0,
+    **kwargs
+) -> Dict[str, Any]:
+    """
+    Runs the complete SBR optimization process:
+
+      1. Full cycle auto-tune (decant, idle, fill, settle)
+      2. MLSS auto-tune (hit target F:M)
+      3. SRT auto-tune (hit target SRT)
+
+    Returns:
+      {
+        "final_design": {...},
+        "cycle_changes": [...],
+        "biology_iterations": [...],
+        "biology_final": {...},
+        "converged": True/False,
+        "notes": "..."
+      }
+    """
+
+    # ------------------------------
+    # PART 1 — CYCLE AUTO-TUNE
+    # ------------------------------
+    cycle_auto = design_sbr_autotune_full_cycle(flow_mgd=flow_mgd, **kwargs)
+
+    cycle_tuned_design = cycle_auto["autotuned_design"]
+    cycle_changes = cycle_auto["changes_made"]
+
+    # Extract tuned cycle parameters
+    tuned_cycle = cycle_tuned_design["cycle"]
+
+    # Feed them to the biology auto-tune
+    kwargs.update({
+        "fill_hr": tuned_cycle["fill_hr"],
+        "react_hr": tuned_cycle["react_hr"],
+        "settle_hr": tuned_cycle["settle_hr"],
+        "decant_hr": tuned_cycle["decant_hr"],
+        "idle_hr": tuned_cycle["idle_hr"],
+    })
+
+    # ------------------------------
+    # PART 2 — MLSS AUTO-TUNE
+    # ------------------------------
+    mlss_auto = design_sbr_autotune_mlss(
+        flow_mgd=flow_mgd,
+        target_f_m=target_f_m,
+        mlss_initial=mlss_initial,
+        **kwargs
+    )
+
+    tuned_design_after_mlss = mlss_auto["final_design"]
+    mlss_final = mlss_auto["mlss_final"]
+
+    # Update inputs for SRT auto-tune
+    kwargs["mlss_mgL"] = mlss_final
+
+    # ------------------------------
+    # PART 3 — SRT AUTO-TUNE
+    # ------------------------------
+    kwargs.pop("mlss_mgL", None)
+    
+    srt_auto = design_sbr_autotune_srt(
+        flow_mgd=flow_mgd,
+        target_srt_days=target_srt_days,
+        mlss_mgL=mlss_final,
+        **kwargs
+    )
+
+    final_design = srt_auto["final_design"]
+
+    # ------------------------------
+    # FINAL OUTPUT
+    # ------------------------------
+    return {
+        "final_design": final_design,
+        "cycle_changes": cycle_changes,
+        "biology_iterations": mlss_auto["iterations"] + srt_auto["iterations"],
+        "biology_final": {
+            "mlss_final": mlss_final,
+            "srt_final": srt_auto["srt_final"],
+            "was_flow_mgd": srt_auto["was_flow_mgd"],
+        },
+        "converged": True,
+        "notes": "Full SBR optimization completed: cycle + MLSS + SRT.",
+    }
